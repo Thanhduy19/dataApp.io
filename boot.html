@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>wasm-boot</title>
+<!-- Order matters: core libsodium first (exposes window.libsodium),
+     then the wrappers (exposes window.sodium), then the Go WASM runtime. -->
+<script src="libsodium.js"></script>
+<script src="sodium.js"></script>
+<script src="wasm_exec.js"></script>
+</head>
+<body>
+<script>
+// Mirrors the server-side boot in the original api/index.js, but inside a
+// WKWebView so the exact same fu.wasm produces the token.
+window.__ready = false;
+window.__bootError = null;
+
+async function boot() {
+  try {
+    // Some Go WASM builds poke at these. Make them exist.
+    globalThis.window = globalThis;
+    globalThis.self = globalThis;
+    if (!globalThis.document) globalThis.document = {};
+
+    await sodium.ready;
+    globalThis.sodium = sodium;
+
+    const go = new Dm();                       // defined by wasm_exec.js
+    const resp = await fetch('fu.wasm');
+    const buf  = await resp.arrayBuffer();
+    const { instance } = await WebAssembly.instantiate(buf, go.importObject);
+
+    // Do NOT await: the Go program parks on select{} and never exits.
+    go.run(instance);
+
+    // Give the Go runtime a moment to register js.Global().Set("getAdv", ...)
+    await new Promise(r => setTimeout(r, 700));
+
+    if (typeof getAdv !== 'function') {
+      throw new Error('getAdv not found after WASM boot');
+    }
+    window.__ready = true;
+  } catch (e) {
+    window.__bootError = (e && e.message) ? e.message : String(e);
+  }
+}
+
+// Called from Dart once __ready is true. Returns the token string or null.
+window.getToken = function (id) {
+  try {
+    var t = getAdv(String(id));
+    return t == null ? null : String(t);
+  } catch (e) {
+    return null;
+  }
+};
+
+boot();
+</script>
+</body>
+</html>
